@@ -1,0 +1,208 @@
+name: Release (Bundled JBR)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-app:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Angular CLI
+        run: npm install -g @angular/cli@15
+
+      - name: Build Angular frontend
+        working-directory: Web
+        run: |
+          npm install
+          ng build --base-href /web/index.html --configuration production --build-optimizer
+
+      - name: Copy frontend to SpringBoot resources
+        run: |
+          mkdir -p Code/src/main/resources/web
+          cp -r Web/dist/web/* Code/src/main/resources/web/
+
+      - name: Extract SQLite database
+        working-directory: Code
+        run: |
+          7z x db.7z -aoa -osrc/main/resources/
+
+      - name: Build with Maven
+        working-directory: Code
+        run: |
+          chmod +x mvnw
+          mvn clean package -DskipTests -q
+
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-download-jar
+          path: |
+            Code/target/map-download.jar
+            Code/lib/
+          retention-days: 1
+
+  package:
+    needs: build-app
+    strategy:
+      matrix:
+        include:
+          - platform: windows-x64
+            jbr_file: jbrsdk_jcef-17.0.14-windows-x64-b1367.22.tar.gz
+            jbr_dir: jbrsdk_jcef-17.0.14-windows-x64-b1367.22
+          - platform: macos-x64
+            jbr_file: jbrsdk_jcef-17.0.14-osx-x64-b1367.22.tar.gz
+            jbr_dir: jbrsdk_jcef-17.0.14-osx-x64-b1367.22
+          - platform: macos-arm64
+            jbr_file: jbrsdk_jcef-17.0.14-osx-aarch64-b1367.22.tar.gz
+            jbr_dir: jbrsdk_jcef-17.0.14-osx-aarch64-b1367.22
+          - platform: linux-x64
+            jbr_file: jbrsdk_jcef-17.0.14-linux-x64-b1367.22.tar.gz
+            jbr_dir: jbrsdk_jcef-17.0.14-linux-x64-b1367.22
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download jar artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: map-download-jar
+          path: app/
+
+      - name: Download JBR
+        run: |
+          JBR_URL="https://cache-redirector.jetbrains.com/intellij-jbr/${{ matrix.jbr_file }}"
+          echo "Downloading JBR from: $JBR_URL"
+          curl -L --retry 3 --connect-timeout 30 -o jbr.tar.gz "$JBR_URL"
+
+      - name: Assemble distribution
+        run: |
+          mkdir -p dist/jbr
+
+          # Extract JBR
+          tar xzf jbr.tar.gz -C dist/jbr --strip-components=1
+
+          # Copy application files
+          cp app/map-download.jar dist/
+          cp -r app/lib/ dist/lib/
+
+          # Create start scripts
+          if [[ "${{ matrix.platform }}" == windows-* ]]; then
+            cat > dist/start.bat << 'BATEOF'
+          @echo off
+          cd /d "%~dp0"
+          set JAVA_HOME=%~dp0jbr
+          set PATH=%JAVA_HOME%\bin;%PATH%
+          java -jar map-download.jar %*
+          BATEOF
+            # UTF-8 fix for bat
+            unix2dos dist/start.bat 2>/dev/null || true
+
+            cat > dist/start.sh << 'SHEOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          export JAVA_HOME="$SCRIPT_DIR/jbr"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          exec java -jar "$SCRIPT_DIR/map-download.jar" "$@"
+          SHEOF
+            chmod +x dist/start.sh
+
+          elif [[ "${{ matrix.platform }}" == macos-* ]]; then
+            cat > dist/start.sh << 'SHEOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          export JAVA_HOME="$SCRIPT_DIR/jbr/Contents/Home"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          exec java -jar "$SCRIPT_DIR/map-download.jar" "$@"
+          SHEOF
+            chmod +x dist/start.sh
+
+          else
+            cat > dist/start.sh << 'SHEOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          export JAVA_HOME="$SCRIPT_DIR/jbr"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          exec java -jar "$SCRIPT_DIR/map-download.jar" "$@"
+          SHEOF
+            chmod +x dist/start.sh
+          fi
+
+      - name: Package (zip for Windows)
+        if: startsWith(matrix.platform, 'windows')
+        run: |
+          cd dist && zip -r ../map-download-${{ matrix.platform }}.zip .
+
+      - name: Package (tar.gz for Linux/macOS)
+        if: "!startsWith(matrix.platform, 'windows')"
+        run: |
+          tar czf map-download-${{ matrix.platform }}.tar.gz -C dist .
+
+      - name: Upload package (zip)
+        if: startsWith(matrix.platform, 'windows')
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-download-${{ matrix.platform }}
+          path: map-download-${{ matrix.platform }}.zip
+          retention-days: 30
+
+      - name: Upload package (tar.gz)
+        if: "!startsWith(matrix.platform, 'windows')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-download-${{ matrix.platform }}
+          path: map-download-${{ matrix.platform }}.tar.gz
+          retention-days: 30
+
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp artifacts/map-download-windows-x64/map-download-windows-x64.zip release/
+          cp artifacts/map-download-macos-x64/map-download-macos-x64.tar.gz release/
+          cp artifacts/map-download-macos-arm64/map-download-macos-arm64.tar.gz release/
+          cp artifacts/map-download-linux-x64/map-download-linux-x64.tar.gz release/
+          ls -lh release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          body: |
+            ## 地图瓦片下载器 (内置运行环境)
+
+            下载对应平台的压缩包，解压后直接运行即可，**无需额外安装 Java 环境**。
+
+            ### 启动方式
+            - **Windows**: 双击 `start.bat`
+            - **macOS / Linux**: 终端运行 `./start.sh`
+
+            ### 本次更新
+            - 合并瓦片图后自动生成 World File + PRJ 坐标配准文件，GIS 软件可直接加载

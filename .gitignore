@@ -1,0 +1,41 @@
+# === Java / Maven ===
+*.class
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# === IDE ===
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.project
+.classpath
+*.swp
+*.swo
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Database (runtime only) ===
+*.sqlite3
+
+# === Logs ===
+*.log
+log/
+
+# === Build output ===
+Web/dist/
+Web/node_modules/
+
+# === Misc ===
+*.tmp
+*.bak
+*.bak2
+
+# === Backup files (too large) ===
+Code/lib/opencv/*backup*
+Code/lib/opencv/*原版*

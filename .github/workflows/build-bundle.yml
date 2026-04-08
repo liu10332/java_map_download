@@ -1,0 +1,181 @@
+name: Build (Bundled JBR)
+
+on:
+  workflow_dispatch:
+
+env:
+  JBR_VERSION: "17.0.14"
+  JBR_BUILD: "1367.22"
+
+jobs:
+  build-app:
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ github.run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Angular CLI
+        run: npm install -g @angular/cli@15
+
+      - name: Build Angular frontend
+        working-directory: Web
+        run: |
+          npm install
+          ng build --base-href /web/index.html --configuration production --build-optimizer
+
+      - name: Copy frontend to SpringBoot resources
+        run: |
+          mkdir -p Code/src/main/resources/web
+          cp -r Web/dist/web/* Code/src/main/resources/web/
+
+      - name: Extract SQLite database
+        working-directory: Code
+        run: |
+          7z x db.7z -aoa -osrc/main/resources/
+
+      - name: Build with Maven
+        working-directory: Code
+        run: |
+          chmod +x mvnw
+          mvn clean package -DskipTests -q
+
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-download-jar
+          path: |
+            Code/target/map-download.jar
+            Code/lib/
+          retention-days: 1
+
+  package:
+    needs: build-app
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: windows-x64
+            jbr_file: jbrsdk_jcef-17.0.14-windows-x64-b1367.22.tar.gz
+            jbr_dir: jbrsdk_jcef-17.0.14-windows-x64-b1367.22
+            archive_ext: .zip
+          - os: ubuntu-latest
+            platform: macos-x64
+            jbr_file: jbrsdk_jcef-17.0.14-osx-x64-b1367.22.tar.gz
+            jbr_dir: jbrsdk_jcef-17.0.14-osx-x64-b1367.22
+            archive_ext: .tar.gz
+          - os: ubuntu-latest
+            platform: macos-arm64
+            jbr_file: jbrsdk_jcef-17.0.14-osx-aarch64-b1367.22.tar.gz
+            jbr_dir: jbrsdk_jcef-17.0.14-osx-aarch64-b1367.22
+            archive_ext: .tar.gz
+          - os: ubuntu-latest
+            platform: linux-x64
+            jbr_file: jbrsdk_jcef-17.0.14-linux-x64-b1367.22.tar.gz
+            jbr_dir: jbrsdk_jcef-17.0.14-linux-x64-b1367.22
+            archive_ext: .tar.gz
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Download jar artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: map-download-jar
+          path: app/
+
+      - name: Download JBR
+        run: |
+          JBR_URL="https://cache-redirector.jetbrains.com/intellij-jbr/${{ matrix.jbr_file }}"
+          echo "Downloading JBR from: $JBR_URL"
+          curl -L --retry 3 --connect-timeout 30 -o jbr.tar.gz "$JBR_URL"
+
+      - name: Assemble distribution
+        run: |
+          mkdir -p dist/jbr
+
+          # Extract JBR
+          tar xzf jbr.tar.gz -C dist/jbr --strip-components=1
+
+          # Copy application files
+          cp app/map-download.jar dist/
+          cp -r app/lib/ dist/lib/
+
+          # Create start scripts
+          if [[ "${{ matrix.platform }}" == windows-* ]]; then
+            cat > dist/start.bat << 'BATEOF'
+          @echo off
+          cd /d "%~dp0"
+          set JAVA_HOME=%~dp0jbr
+          set PATH=%JAVA_HOME%\bin;%PATH%
+          java -jar map-download.jar %*
+          BATEOF
+
+            # Also create a .sh for WSL/cygwin users
+            cat > dist/start.sh << 'SHEOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          export JAVA_HOME="$SCRIPT_DIR/jbr"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          exec java -jar "$SCRIPT_DIR/map-download.jar" "$@"
+          SHEOF
+            chmod +x dist/start.sh
+
+          elif [[ "${{ matrix.platform }}" == macos-* ]]; then
+            cat > dist/start.sh << 'SHEOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          export JAVA_HOME="$SCRIPT_DIR/jbr/Contents/Home"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          exec java -jar "$SCRIPT_DIR/map-download.jar" "$@"
+          SHEOF
+            chmod +x dist/start.sh
+
+          else
+            cat > dist/start.sh << 'SHEOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          export JAVA_HOME="$SCRIPT_DIR/jbr"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          exec java -jar "$SCRIPT_DIR/map-download.jar" "$@"
+          SHEOF
+            chmod +x dist/start.sh
+          fi
+
+      - name: Package (zip for Windows)
+        if: startsWith(matrix.platform, 'windows')
+        run: |
+          cd dist && zip -r ../map-download-${{ matrix.platform }}.zip .
+
+      - name: Package (tar.gz for Linux/macOS)
+        if: "!startsWith(matrix.platform, 'windows')"
+        run: |
+          tar czf map-download-${{ matrix.platform }}.tar.gz -C dist .
+
+      - name: Upload package (zip)
+        if: startsWith(matrix.platform, 'windows')
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-download-${{ matrix.platform }}
+          path: map-download-${{ matrix.platform }}.zip
+          retention-days: 30
+
+      - name: Upload package (tar.gz)
+        if: "!startsWith(matrix.platform, 'windows')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-download-${{ matrix.platform }}
+          path: map-download-${{ matrix.platform }}.tar.gz
+          retention-days: 30
