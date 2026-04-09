@@ -3,6 +3,7 @@ package com.jmd.ui.tab.b_download.log;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
+import javax.swing.SwingUtilities;
 
 import com.jmd.rx.Topic;
 import com.jmd.rx.client.InnerMqClient;
