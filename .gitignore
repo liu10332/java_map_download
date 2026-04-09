@@ -25,7 +25,6 @@ desktop.ini
 
 # === Logs ===
 *.log
-log/
 
 # === Build output ===
 Web/dist/
