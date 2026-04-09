@@ -62,11 +62,12 @@ jobs:
 
       - name: Upload jar artifact
         uses: actions/upload-artifact@v4
+        working-directory: Code
         with:
           name: map-download-jar
           path: |
-            Code/target/map-download.jar
-            Code/lib/
+            target/map-download.jar
+            lib/
           retention-days: 1
 
   package:
@@ -117,7 +118,7 @@ jobs:
           tar xzf jbr.tar.gz -C dist/jbr --strip-components=1
 
           # Copy application files
-          cp app/map-download.jar dist/
+          cp app/target/map-download.jar dist/
           cp -r app/lib/ dist/lib/
 
           # Create start scripts
